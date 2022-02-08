@@ -17,12 +17,6 @@
 /// Divide N by S, round up result.
 #define ROUND_UP(N, S) ((((N) + (S) - 1) / (S)))
 
-/// Number of iterations of the Menger sponge.
-#define ITER_COUNT 6
-
-/// Number of ray bounces.
-#define BOUNCE_COUNT 10
-
 __forceinline__ __device__ float sd_box(float3 p, float3 b)
 {
     float3 q = fabsf(p) - b;
@@ -31,7 +25,7 @@ __forceinline__ __device__ float sd_box(float3 p, float3 b)
 }
 
 /// Returns the distance to a unit-sized menger sponge and a color value based
-/// on the number of iterations of the closest
+/// on the number of iterations of the closest surface.
 /// https://iquilezles.org/www/articles/menger/menger.htm
 __forceinline__ __device__ float2 map(float3 p)
 {
@@ -70,8 +64,8 @@ struct hit {
 
 __forceinline__ __device__ hit trace(float3 origin, float3 direction)
 {
-    // slight offset to prevent from self-intersection
-#define TMIN .1f
+    // slight offset to prevent self-intersection
+#define TMIN .01f
 #define TMAX 1000.f
     hit h;
     for (float t = TMIN; t < TMAX;) {
@@ -93,6 +87,8 @@ __forceinline__ __device__ hit trace(float3 origin, float3 direction)
             h.color = d.y;
             return h;
         }
+        // advance the ray with the distance to the sdf, since we know that we
+        // won't skip intersections doing this
         t += d.x;
     }
 
@@ -102,8 +98,93 @@ __forceinline__ __device__ hit trace(float3 origin, float3 direction)
 #undef TMIN
 }
 
-__global__ void generate_pixel(
-        uint size_x, uint size_y, uint sample_count, uchar *image,
+/// Generates a radiance value for the ith sample of this pixel.
+__forceinline__ __device__ float3 generate_pixel(
+        uint image_idx, uint image_idx_x, uint image_idx_y, uint sample_idx,
+        uint size_x, uint size_y, camera *camera)
+{
+    // initialize random based on sample index and image index
+    uint seed = tea<16>(image_idx, sample_idx);
+
+    // generate a ray though the pixel, randomly offset within the pixel
+    float2 jitter = make_float2(rnd(seed), rnd(seed));
+    float2 res = make_float2(size_x, size_y);
+    float2 idx = make_float2(image_idx_x, image_idx_y);
+    float2 d = ((idx + jitter) / res) * 2.f - 1.f; // position on raster
+    float3 ray_origin = camera->origin;
+    float3 ray_direction = normalize(
+            d.x * camera->u + d.y * camera->v + camera->w);
+
+    float3 throughput = make_float3(1.f);
+    float3 radiance = make_float3(0.f);
+
+    // keep bounding until the maximum number of bounces is hit,
+    // or the ray does not intersect with the sdf
+    for (int i = 0; i < BOUNCE_COUNT; i++) {
+        hit h = trace(ray_origin, ray_direction);
+
+        if (!h.hit) {
+            // 'sky' color
+            const float3 color = make_float3(.6, .8f, 1.f);
+            radiance += throughput * color;
+            break;
+        }
+
+        // find a diffuse color based on the single color value
+        const float3 diff_color = make_float3(
+                (1.f - h.color) * .5f, (1.f - h.color) * .3f,
+                h.color * .6f);
+
+        // surface model is lambertian, attenuation is equal to diffuse
+        // color, assuming we sampled with cosine weighted hemisphere
+        throughput *= diff_color;
+
+        // set new origin and generate new direction
+        ray_origin = h.hitpoint;
+        float3 w_in = cosine_sample_hemisphere(rnd(seed), rnd(seed));
+        frame onb(h.normal);
+        onb.inverse_transform(w_in);
+        ray_direction = w_in;
+    }
+
+    return radiance;
+}
+
+/// Implementation with regeneration: create a number of persistent threads that
+/// complete samples one by one, starting new ones when the current one is
+/// terminated.
+__global__ void generate_pixel_regeneration(
+        uint size_x, uint size_y, uint sample_count, float *buffer,
+        camera *camera, ulong *idx)
+{
+    const ulong max_count = size_x * size_y * sample_count;
+    while (true) {
+        // obtain the next index. if is it out of bounds, stop
+        ulong this_idx = atomicAdd(idx, 1);
+        if (this_idx >= max_count) break;
+
+        uint sample_idx = this_idx / (size_x * size_y);
+        uint image_idx = this_idx - sample_idx * size_x * size_y;
+        uint image_idx_y = image_idx / size_x;
+        uint image_idx_x = image_idx - image_idx_y * size_x;
+
+        // obtain radiance
+        float3 radiance = generate_pixel(
+                image_idx, image_idx_x, image_idx_y, sample_idx,
+                size_x, size_y, camera);
+
+        // atomically add to buffer
+        atomicAdd(&buffer[4 * image_idx + 0], radiance.x / float(sample_count));
+        atomicAdd(&buffer[4 * image_idx + 1], radiance.y / float(sample_count));
+        atomicAdd(&buffer[4 * image_idx + 2], radiance.z / float(sample_count));
+    }
+}
+
+/// Naive implementation: create a number of threads at least equal to the
+/// number of pixels * the number of samples, each thread computes all samples
+/// for that pixel.
+__global__ void generate_pixel_naive(
+        uint size_x, uint size_y, uint sample_count, float *buffer,
         camera *camera)
 {
     uint2 idx = make_uint2(
@@ -115,66 +196,22 @@ __global__ void generate_pixel(
 
     float3 accumulated_color = make_float3(0.f);
 
-    for (int j = 0; j < sample_count; j++) {
-        // initialize random based on sample index and image index
-        uint seed = tea<16>(image_idx, j);
-
-        // generate a ray though the pixel, randomly offset within the pixel
-        float2 jitter = make_float2(rnd(seed), rnd(seed));
-        float2 res = make_float2(float(size_x), float(size_y));
-        float2 d = ((make_float2(idx.x, idx.y) + jitter) / res) * 2.f - 1.f;
-        float3 ray_origin = camera->origin;
-        float3 ray_direction = normalize(
-                d.x * camera->u + d.y * camera->v + camera->w);
-
-        float3 throughput = make_float3(1.f);
-        float3 radiance = make_float3(0.f);
-
-        // keep bounding until the maximum number of bounces is hit,
-        // or the ray does not intersect with the sdf
-        for (int i = 0; i < BOUNCE_COUNT; i++) {
-            hit h = trace(ray_origin, ray_direction);
-
-            if (!h.hit) {
-                // 'sky' color
-                const float3 color = make_float3(.6, .8f, 1.f);
-                radiance += throughput * color;
-                break;
-            }
-
-            // find a diffuse color based on the single color value
-            const float3 diff_color = make_float3(
-                    (1.f - h.color) * .5f, (1.f - h.color) * .3f,
-                    h.color * .6f);
-
-            // surface model is lambertian, attenuation is equal to diffuse
-            // color, assuming we sampled with cosine weighted hemisphere
-            throughput *= diff_color;
-
-            // set new origin and generate new direction
-            ray_origin = h.hitpoint;
-            float3 w_in = cosine_sample_hemisphere(rnd(seed), rnd(seed));
-            frame onb(h.normal);
-            onb.inverse_transform(w_in);
-            ray_direction = w_in;
-        }
+    for (int i = 0; i < sample_count; i++) {
+        float3 radiance = generate_pixel(
+                image_idx, idx.x, idx.y, i, size_x, size_y, camera);
 
         accumulated_color += radiance / float(sample_count);
     }
 
-    // convert linear to sRGB
-    const float inv_gamma = 1.f / 2.4f;
-    float3 rgb = make_float3(
-            powf(accumulated_color.x, inv_gamma),
-            powf(accumulated_color.y, inv_gamma),
-            powf(accumulated_color.z, inv_gamma));
-    rgb = clamp(rgb, 0.f, 1.f);
-
-    // write to image buffer
-    image[3 * image_idx + 0] = rgb.x * 255.f;
-    image[3 * image_idx + 1] = rgb.y * 255.f;
-    image[3 * image_idx + 2] = rgb.z * 255.f;
+    // write to buffer
+    buffer[4 * image_idx + 0] = accumulated_color.x;
+    buffer[4 * image_idx + 1] = accumulated_color.y;
+    buffer[4 * image_idx + 2] = accumulated_color.z;
 }
+
+/// Converts a linear radiance value to a sRGB pixel value.
+uchar radiance_to_srgb(float val)
+{ return (uchar) (clamp(powf(val, 1.f / 2.4f), 0.f, 1.f) * 255.f); }
 
 void generate(
         uint size_x, uint size_y, uint sample_count, const char *filename)
@@ -195,22 +232,41 @@ void generate(
     CUDA_CHECK(cudaMemcpy(d_cam, &cam, sizeof(camera), cudaMemcpyHostToDevice));
 
     // create output buffer on device
-    uchar *d_image = nullptr;
-    size_t image_size = sizeof(char) * 3 * size_x * size_y;
-    CUDA_CHECK(cudaMalloc(&d_image, image_size));
-    CUDA_CHECK(cudaMemset(d_image, 0, image_size));
+    float *d_buffer = nullptr;
+    size_t buffer_size = sizeof(float) * 4 * size_x * size_y;
+    CUDA_CHECK(cudaMalloc(&d_buffer, buffer_size));
+    CUDA_CHECK(cudaMemset(d_buffer, 0, buffer_size));
 
     // events for measuring elapsed time
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
 
+    // declare bool to get warnings even in unused code
+#ifdef NAIVE
+    bool do_naive = true;
+#else
+    bool do_naive = false;
+#endif
+
     // launch kernel
-    dim3 block_size(16, 16, 1);
-    dim3 block_count(ROUND_UP(size_x, 16), ROUND_UP(size_y, 16), 1);
     CUDA_CHECK(cudaEventRecord(start));
-    generate_pixel<<<block_count, block_size>>>(
-            size_x, size_y, sample_count, d_image, d_cam);
+    ulong *d_idx = nullptr;
+    if (do_naive) {
+#define BLOCK_SIZE 16
+        dim3 block_size(BLOCK_SIZE, BLOCK_SIZE, 1);
+        dim3 block_count(
+                ROUND_UP(size_x, BLOCK_SIZE), ROUND_UP(size_y, BLOCK_SIZE), 1);
+        generate_pixel_naive<<<block_count, block_size>>>(
+                size_x, size_y, sample_count, d_buffer, d_cam);
+#undef BLOCK_SIZE
+    } else {
+        // additionally, allocate a single long int counter
+        CUDA_CHECK(cudaMalloc(&d_idx, sizeof(ulong)));
+        CUDA_CHECK(cudaMemset(d_idx, 0, sizeof(ulong)));
+        generate_pixel_regeneration<<<128, 512>>>(
+                size_x, size_y, sample_count, d_buffer, d_cam, d_idx);
+    }
     CUDA_CHECK(cudaEventRecord(stop));
 
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -220,14 +276,24 @@ void generate(
 
     // when kernel is done, copy buffer back to host
     CUDA_SYNC_CHECK();
+    if (!do_naive) CUDA_CHECK(cudaFree(d_idx));
     CUDA_CHECK(cudaFree(d_cam));
-    uchar *image = (uchar *) malloc(image_size);
-    CUDA_CHECK(cudaMemcpy(image, d_image, image_size, cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaFree(d_image));
+    float *buffer = (float *) malloc(buffer_size);
+    CUDA_CHECK(cudaMemcpy(
+            buffer, d_buffer, buffer_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(d_buffer));
+
+    // convert buffer to format accepted by image writer
+    uchar *image = (uchar *) malloc(sizeof(char) * 3 * size_x * size_y);
+    for (uint i = 0; i < size_x * size_y; i++) {
+        image[3 * i + 0] = radiance_to_srgb(buffer[4 * i + 0]);
+        image[3 * i + 1] = radiance_to_srgb(buffer[4 * i + 1]);
+        image[3 * i + 2] = radiance_to_srgb(buffer[4 * i + 2]);
+    }
+    free(buffer);
 
     // write buffer to file
     stbi_flip_vertically_on_write(1);
     stbi_write_png(filename, size_x, size_y, 3, image, size_x * 3);
     free(image);
 }
-
