@@ -262,8 +262,7 @@ function(OPTIX_add_sample_executable target_name_base target_name_var)
     add_executable(${target_name}
             ${source_files}
             ${generated_files}
-            ${cmake_options}
-            )
+            ${cmake_options})
 
     if (UNIX AND NOT APPLE)
         # Force using RPATH instead of RUNPATH on Debian
@@ -278,6 +277,9 @@ endfunction()
 
 # only define a single "sample"
 add_subdirectory(src)
+
+# dependencies
+add_subdirectory(deps)
 
 #################################################################
 

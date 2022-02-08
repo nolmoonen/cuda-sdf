@@ -1,6 +1,8 @@
 #include "trace.h"
 
-int main()
-{
-    hello_cuda();
-}
+#define SIZE_X 1080
+#define SIZE_Y 1080
+#define SAMPLE_COUNT 1024
+
+int main(int argc, char *argv[])
+{ generate(SIZE_X, SIZE_Y, SAMPLE_COUNT, "out.png"); }
