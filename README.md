@@ -1,8 +1,8 @@
 `cuda-sdf` performs naive path tracing of a signed distance field (SDF) using
 ray marching, accelerated with CUDA. The below one-megapixel image displays the
-Menger sponge, with a thousand samples and ten bounces, generated in ten seconds
-on an RTX 2070. Note that the RTX ray shooting capabilities cannot be not used,
-as the geometry is implicitly defined.
+Menger sponge, with a thousand samples and up to 80 bounces, generated in about
+20 seconds on an RTX 2070. Note that the RTX ray shooting capabilities cannot be
+not used, as the geometry is implicitly defined.
 
 ![](doc/splash.png)
 

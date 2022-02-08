@@ -17,6 +17,7 @@
 /// Divide N by S, round up result.
 #define ROUND_UP(N, S) ((((N) + (S) - 1) / (S)))
 
+/// SDF of a box.
 __forceinline__ __device__ float sd_box(float3 p, float3 b)
 {
     float3 q = fabsf(p) - b;
@@ -120,7 +121,7 @@ __forceinline__ __device__ float3 generate_pixel(
 
     // keep bounding until the maximum number of bounces is hit,
     // or the ray does not intersect with the sdf
-    for (int i = 0; i < BOUNCE_COUNT; i++) {
+    for (int i = 0; i < MAX_BOUNCE_COUNT; i++) {
         hit h = trace(ray_origin, ray_direction);
 
         if (!h.hit) {
@@ -134,6 +135,15 @@ __forceinline__ __device__ float3 generate_pixel(
         const float3 diff_color = make_float3(
                 (1.f - h.color) * .5f, (1.f - h.color) * .3f,
                 h.color * .6f);
+
+        // check if we continue using russian roulette, where the max component
+        // of the color dictates the probability
+        if (i > MIN_BOUNCE_COUNT) {
+            float rr_prob = fmaxf(diff_color);
+            if (rr_prob < rnd(seed)) break;
+            // if continuing, scale with probability
+            throughput /= rr_prob;
+        }
 
         // surface model is lambertian, attenuation is equal to diffuse
         // color, assuming we sampled with cosine weighted hemisphere
@@ -264,7 +274,7 @@ void generate(
         // additionally, allocate a single long int counter
         CUDA_CHECK(cudaMalloc(&d_idx, sizeof(ulong)));
         CUDA_CHECK(cudaMemset(d_idx, 0, sizeof(ulong)));
-        generate_pixel_regeneration<<<128, 512>>>(
+        generate_pixel_regeneration<<<1024, 1024>>>(
                 size_x, size_y, sample_count, d_buffer, d_cam, d_idx);
     }
     CUDA_CHECK(cudaEventRecord(stop));
