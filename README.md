@@ -28,7 +28,7 @@ included:
 
 * _Menger Fractal_  
   Quillez, I. [[link]](https://iquilezles.org/www/articles/menger/menger.htm)  
-  This article explains how the Menger Fractal can be represented by a SDF.
+  This article explains how the Menger fractal can be represented by an SDF.
 * _Ray Tracing Gems II: Chapter 14, The Reference Path Tracer_  
   Boksansky, J. and Marrs,
   A. [[link]](https://link.springer.com/book/10.1007/978-1-4842-7185-8)  
