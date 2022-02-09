@@ -25,33 +25,29 @@ __forceinline__ __device__ float sd_box(float3 p, float3 b)
            fminf(fmaxf(q.x, fmaxf(q.y, q.z)), 0.f);
 }
 
-/// Returns the distance to a unit-sized menger sponge and a color value based
-/// on the number of iterations of the closest surface.
+/// Returns the distance to a unit-sized menger sponge.
 /// https://iquilezles.org/www/articles/menger/menger.htm
-__forceinline__ __device__ float2 map(float3 p)
+__forceinline__ __device__ float map(float3 p)
 {
+    // start with a unit box
     float d = sd_box(p, make_float3(1.f));
-    float col = 1.f;
 
-    float s = 1.f;
+    float scale = 1.f;
     for (int m = 0; m < ITER_COUNT; m++) {
-        float3 a = mod(p * s, 2.f) - make_float3(1.f);
-        s *= 3.f;
+        // optimized, negative part of scaled sdf of three infinite boxes
+        float3 a = mod(p * scale, 2.f) - make_float3(1.f);
+        scale *= 3.f;
         float3 r = fabsf(make_float3(1.f) - 3.f * fabsf(a));
 
         float da = fmaxf(r.x, r.y);
         float db = fmaxf(r.y, r.z);
         float dc = fmaxf(r.z, r.x);
-        float c = (fminf(da, fminf(db, dc)) - 1.f) / s;
+        float c = (fminf(da, fminf(db, dc)) - 1.f) / scale;
 
-        if (c > d) {
-            d = c;
-            // assign a color based on the iteration count
-            col = (1.f + float(m)) / float(ITER_COUNT + 1);
-        }
+        d = fmaxf(d, c);
     }
 
-    return make_float2(d, col);
+    return d;
 }
 
 struct hit {
@@ -59,10 +55,9 @@ struct hit {
     /// Whether the SDF is hit.
     int hit;
     float3 normal;
-    /// Single-valued color.
-    float color;
 };
 
+/// March a ray and return the hitpoint with the SDF.
 __forceinline__ __device__ hit trace(float3 origin, float3 direction)
 {
     // slight offset to prevent self-intersection
@@ -71,26 +66,25 @@ __forceinline__ __device__ hit trace(float3 origin, float3 direction)
     hit h;
     for (float t = TMIN; t < TMAX;) {
         float3 p = origin + t * direction;
-        float2 d = map(p);
-        if (d.x < .001f) {
+        float d = map(p);
+        if (d < .001f) {
             h.hit = true;
             h.hitpoint = p;
             // find normal using central differences
             // https://iquilezles.org/www/articles/normalsSDF/normalsSDF.htm
             const float eps = .0001f;
             h.normal = normalize(make_float3(
-                    map(p + make_float3(eps, 0.f, 0.f)).x -
-                    map(p - make_float3(eps, 0.f, 0.f)).x,
-                    map(p + make_float3(0.f, eps, 0.f)).x -
-                    map(p - make_float3(0.f, eps, 0.f)).x,
-                    map(p + make_float3(0.f, 0.f, eps)).x -
-                    map(p - make_float3(0.f, 0.f, eps)).x));
-            h.color = d.y;
+                    map(p + make_float3(eps, 0.f, 0.f)) -
+                    map(p - make_float3(eps, 0.f, 0.f)),
+                    map(p + make_float3(0.f, eps, 0.f)) -
+                    map(p - make_float3(0.f, eps, 0.f)),
+                    map(p + make_float3(0.f, 0.f, eps)) -
+                    map(p - make_float3(0.f, 0.f, eps))));
             return h;
         }
         // advance the ray with the distance to the sdf, since we know that we
         // won't skip intersections doing this
-        t += d.x;
+        t += d;
     }
 
     h.hit = false;
@@ -131,10 +125,8 @@ __forceinline__ __device__ float3 generate_pixel(
             break;
         }
 
-        // find a diffuse color based on the single color value
-        const float3 diff_color = make_float3(
-                (1.f - h.color) * .5f, (1.f - h.color) * .3f,
-                h.color * .6f);
+        // pick a static diffuse color
+        float3 diff_color = make_float3(.2f, .3f, .9f);
 
         // check if we continue using russian roulette, where the max component
         // of the color dictates the probability
@@ -226,15 +218,18 @@ uchar radiance_to_srgb(float val)
 void generate(
         uint size_x, uint size_y, uint sample_count, const char *filename)
 {
-    // initialize camera
-    camera cam;
-    cam.origin = make_float3(2.1f, 0.f, 0.f);
-    float3 target = make_float3(0.f);
-    const float3 up = make_float3(0.f, 1.f, 0.f);
+    // variables that define the camera
+    float3 origin = make_float3(-.3f);
+    float3 target = make_float3(1.f);
+    float3 up = make_float3(0.f, 1.f, 0.f);
+
+    // initialize camera based on the above variables
     float aspect = float(size_x) / float(size_y);
-    cam.w = normalize(target - cam.origin); // lookat direction
+    camera cam;
+    cam.origin = origin;
+    cam.w = normalize(target - cam.origin);       // lookat direction
     cam.u = normalize(cross(cam.w, up)) * aspect; // screen right
-    cam.v = normalize(cross(cam.u, cam.w)); // screen up
+    cam.v = normalize(cross(cam.u, cam.w));       // screen up
 
     // copy camera parameters to device
     camera *d_cam = nullptr;

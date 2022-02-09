@@ -14,10 +14,7 @@ typedef unsigned long long int ulong;
 #define MAX_BOUNCE_COUNT 80
 
 /// Whether to use a naive implementation.
-#define NAIVE
-
-// naive      ~23.629944s
-// regenerate ~22.127007s
+//#define NAIVE
 
 void generate(
         uint size_x, uint size_y, uint sample_count, const char *filename);

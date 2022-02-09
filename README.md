@@ -1,18 +1,28 @@
 `cuda-sdf` performs naive path tracing of a signed distance field (SDF) using
 ray marching, accelerated with CUDA. The below one-megapixel image displays the
 Menger sponge, with a thousand samples and up to 80 bounces, generated in about
-20 seconds on an RTX 2070. Note that the RTX ray shooting capabilities cannot be
-not used, as the geometry is implicitly defined.
+150 seconds on an RTX 2070. Note that the RTX ray shooting capabilities cannot
+be not used, as the geometry is implicitly defined.
 
 ![](doc/splash.png)
 
+## Performance
+
+A naive implementation (`generate_pixel_naive`), where each thread is assigned a
+pixel and computes all samples for that pixel, computes the above image in about
+150 seconds. An alternative implementation (`generate_pixel_regeneration`)
+spawns a pool of persistent threads that regenerate paths when they terminate,
+reducing the number of idle threads in a warp. This gives an 4.5% decrease in
+runtime and a 2% increase in occupancy, as reported by Nsight Compute.
+
 ## System requirements and dependencies
 
-Building is tested with MSVC, but other compilers should work as well. The
-following third-party dependencies are included:
+Building requires MSVC 2019. The following third-party dependencies are
+included:
 
 * [stb](https://github.com/nothings/stb) for writing PNG files.
-* `sutil` from the [OptiX](https://developer.nvidia.com/optix) SDK samples.
+* `sutil` from the [OptiX](https://developer.nvidia.com/optix) SDK samples for
+  random number generation and vector- and matrix math.
 
 ## Resources
 
@@ -23,3 +33,7 @@ following third-party dependencies are included:
   Boksansky, J. and Marrs,
   A. [[link]](https://link.springer.com/book/10.1007/978-1-4842-7185-8)  
   This chapter explains how to create a simple path tracer.
+* _Path Regeneration for Interactive Path Tracing_  
+  Novák J. et
+  al. [[link]](https://diglib.eg.org/handle/10.2312/egsh.20101048.061-064)  
+  Explains the concept of path regeneration.
