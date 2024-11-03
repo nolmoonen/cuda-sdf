@@ -2,12 +2,12 @@
 #include <stdio.h>
 #include <vector_functions.h>
 #include <vector_types.h>
-#include <deps/sutil/vec_math.h>
-#include <deps/sutil/random.h>
+#include <sutil/vec_math.h>
+#include <sutil/random.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 
-#include <deps/stb/stb_image_write.h>
+#include <stb/stb_image_write.h>
 
 #include "vec_math_helper.h"
 #include "camera.h"
@@ -157,12 +157,12 @@ __forceinline__ __device__ float3 generate_pixel(
 /// terminated.
 __global__ void generate_pixel_regeneration(
         uint size_x, uint size_y, uint sample_count, float *buffer,
-        camera *camera, ulong *idx)
+        camera *camera, unsigned long long int *idx)
 {
     const ulong max_count = size_x * size_y * sample_count;
     while (true) {
         // obtain the next index. if is it out of bounds, stop
-        ulong this_idx = atomicAdd(idx, 1);
+        unsigned long long int this_idx = atomicAdd(idx, 1);
         if (this_idx >= max_count) break;
 
         uint sample_idx = this_idx / (size_x * size_y);
@@ -256,7 +256,7 @@ void generate(
 
     // launch kernel
     CUDA_CHECK(cudaEventRecord(start));
-    ulong *d_idx = nullptr;
+    unsigned long long int *d_idx = nullptr;
     if (do_naive) {
 #define BLOCK_SIZE 16
         dim3 block_size(BLOCK_SIZE, BLOCK_SIZE, 1);
@@ -267,8 +267,8 @@ void generate(
 #undef BLOCK_SIZE
     } else {
         // additionally, allocate a single long int counter
-        CUDA_CHECK(cudaMalloc(&d_idx, sizeof(ulong)));
-        CUDA_CHECK(cudaMemset(d_idx, 0, sizeof(ulong)));
+        CUDA_CHECK(cudaMalloc(&d_idx, sizeof(unsigned long long int)));
+        CUDA_CHECK(cudaMemset(d_idx, 0, sizeof(unsigned long long int)));
         generate_pixel_regeneration<<<1024, 1024>>>(
                 size_x, size_y, sample_count, d_buffer, d_cam, d_idx);
     }

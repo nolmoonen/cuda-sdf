@@ -4,5 +4,5 @@
 #define SIZE_Y 1080
 #define SAMPLE_COUNT 1024
 
-int main(int argc, char *argv[])
+int main()
 { generate(SIZE_X, SIZE_Y, SAMPLE_COUNT, "out.png"); }

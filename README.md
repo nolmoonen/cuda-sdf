@@ -17,8 +17,7 @@ runtime and a 2% increase in occupancy, as reported by Nsight Compute.
 
 ## System requirements and dependencies
 
-Building requires MSVC 2019. The following third-party dependencies are
-included:
+The following third-party dependencies are included:
 
 * [stb](https://github.com/nothings/stb) for writing PNG files.
 * `sutil` from the [OptiX](https://developer.nvidia.com/optix) SDK samples for
